@@ -1,0 +1,38 @@
+data:
+  root: datasets/rcclz_clean_split_20261013_seed2035
+  manifest: training_manifest.csv
+  class_names:
+  - OK
+  - 少锡膏偏移
+  - 立碑浮高侧立
+  - 缺件
+  - 翻帖
+  preprocessing: rgb
+  image_size:
+  - 256
+  - 256
+  batch_size: 16
+  num_workers: 4
+model:
+  backbone_name: dinov3_vits16
+  weights_path: ckpts/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
+  interaction_indexes:
+  - 5
+  - 8
+  - 11
+  hidden_dim: 224
+  conv_inplane: 32
+  use_sta: true
+  freeze_dinov3: false
+  dropout: 0.2
+training:
+  epochs: 30
+  backbone_lr: 1.0e-05
+  head_lr: 0.0003
+  min_lr: 1.0e-06
+  weight_decay: 0.05
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  amp: true
+  seed: 42
+  output_dir: outputs/rcclz_deg_search_20261013/01_b0

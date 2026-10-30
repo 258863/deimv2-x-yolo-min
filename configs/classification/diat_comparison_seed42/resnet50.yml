@@ -1,0 +1,30 @@
+data:
+  root: datasets/DIAT-uSAT
+  manifest: manifest.csv
+  preprocessing: diat
+  image_size: [288, 384]
+  batch_size: 16
+  num_workers: 4
+  loader_seed: 42
+model:
+  architecture: resnet50
+  weights_path: ckpts/torchvision_imagenet1k/resnet50-11ad3fa6.pth
+  weights_name: ResNet50_Weights.IMAGENET1K_V2
+pretraining:
+  dataset: ImageNet-1K
+  implementation: torchvision.models.resnet50
+  weights: ResNet50_Weights.IMAGENET1K_V2
+  url: https://download.pytorch.org/models/resnet50-11ad3fa6.pth
+training:
+  epochs: 30
+  optimizer: sgd
+  lr: 0.01
+  momentum: 0.9
+  weight_decay: 0.0001
+  exclude_norm_bias_from_decay: false
+  min_lr: 0.000001
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  amp: true
+  seed: 42
+  output_dir: outputs/diat_comparison_seed42_20261022/resnet50_seed42_run01

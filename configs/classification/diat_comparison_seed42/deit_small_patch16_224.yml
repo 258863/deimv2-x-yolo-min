@@ -1,0 +1,33 @@
+data:
+  root: datasets/DIAT-uSAT
+  manifest: manifest.csv
+  preprocessing: diat
+  image_size: [288, 384]
+  batch_size: 16
+  num_workers: 4
+  loader_seed: 42
+model:
+  architecture: deit_small_patch16_224
+  weights_path: ckpts/transformer_imagenet1k/deit_small_patch16_224-cd65a155.pth
+  weights_name: deit_small_patch16_224.fb_in1k
+  image_size: [288, 384]
+pretraining:
+  dataset: ImageNet-1K
+  implementation: timm==1.0.22/deit_small_patch16_224
+  weights: deit_small_patch16_224.fb_in1k
+  url: https://dl.fbaipublicfiles.com/deit/deit_small_patch16_224-cd65a155.pth
+  position_interpolation: bicubic_antialias_14x14_to_18x24_preserve_cls
+training:
+  epochs: 30
+  optimizer: adamw
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.05
+  exclude_norm_bias_from_decay: true
+  no_weight_decay_names: [pos_embed, cls_token]
+  min_lr: 0.000001
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  amp: true
+  seed: 42
+  output_dir: outputs/diat_transformer_comparison_seed42_20261026/deit_small_patch16_224_seed42_run01

@@ -1,0 +1,32 @@
+data:
+  root: datasets/DIAT-uSAT
+  manifest: manifest.csv
+  preprocessing: diat
+  image_size: [288, 384]
+  batch_size: 16
+  num_workers: 4
+  loader_seed: 42
+model:
+  architecture: swin_t
+  weights_path: ckpts/transformer_imagenet1k/swin_t-704ceda3.pth
+  weights_name: Swin_T_Weights.IMAGENET1K_V1
+  image_size: [288, 384]
+pretraining:
+  dataset: ImageNet-1K
+  implementation: torchvision.models.swin_t
+  weights: Swin_T_Weights.IMAGENET1K_V1
+  url: https://download.pytorch.org/models/swin_t-704ceda3.pth
+training:
+  epochs: 30
+  optimizer: adamw
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.05
+  exclude_norm_bias_from_decay: true
+  no_weight_decay_keywords: [relative_position_bias_table]
+  min_lr: 0.000001
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  amp: true
+  seed: 42
+  output_dir: outputs/diat_transformer_comparison_seed42_20261026/swin_t_seed42_run01

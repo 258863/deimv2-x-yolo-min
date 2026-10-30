@@ -1,0 +1,46 @@
+data:
+  root: datasets/DIAT-uSAT
+  manifest: manifest.csv
+  image_size:
+  - 288
+  - 384
+  batch_size: 16
+  num_workers: 4
+model:
+  backbone_name: dinov3_vits16
+  weights_path: ckpts/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
+  interaction_indexes:
+  - 5
+  - 8
+  - 11
+  hidden_dim: 224
+  conv_inplane: 32
+  use_sta: true
+  freeze_dinov3: false
+  dropout: 0.2
+  sta_variant: s1_ca
+  sta_bottleneck_dim: 64
+  sta_adapter_stages:
+  - conv3
+  cross_branch_interaction: true
+  interaction_direction: bidirectional
+  interaction_position: pre_s1_ca
+  fusion_deg: true
+  fusion_deg_stage: c3
+  fusion_deg_position: pre_fusion
+  fusion_deg_direction_source: projected
+  module_dim: 64
+  fusion_deg_direction: false
+  fusion_deg_axis: true
+  fusion_deg_gate: true
+training:
+  epochs: 30
+  backbone_lr: 1.0e-05
+  head_lr: 0.0003
+  min_lr: 1.0e-06
+  weight_decay: 0.05
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  amp: true
+  seed: 3407
+  output_dir: /root/autodl-tmp/deimv2/outputs/diat_ablation_20261014/no_direction_seed3407

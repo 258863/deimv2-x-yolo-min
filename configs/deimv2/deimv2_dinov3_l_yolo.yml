@@ -1,0 +1,38 @@
+__include__: ['deimv2_dinov3_l_coco.yml']
+
+yolo_data: /path/to/dataset/data.yaml
+output_dir: ./outputs/deimv2_dinov3_l_yolo
+
+# __include__ merges whole lists (not item-by-item), so these two `ops` lists are full copies of
+# deimv2_dinov3_l_coco.yml's train/val transforms with Resize swapped for LetterBox, so YOLO data
+# keeps its aspect ratio (padded, not stretched) the way the original YOLO pipeline does.
+# engine/solver/det_engine.py already un-letterboxes predicted boxes at eval time when a target
+# carries `letterbox_gain`/`letterbox_pad`, so mAP is still computed in original-image coordinates.
+train_dataloader:
+  total_batch_size: 2
+  dataset:
+    transforms:
+      ops:
+        - {type: Mosaic, output_size: 320, rotation_range: 10, translation_range: [0.1, 0.1], scaling_range: [0.5, 1.5],
+           probability: 1.0, fill_value: 0, use_cache: True, max_cached_images: 50, random_pop: True}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: RandomHorizontalFlip}
+        - {type: LetterBox, size: [640, 640], fill: 114}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        epoch: [4, 34, 60]
+
+val_dataloader:
+  total_batch_size: 2
+  dataset:
+    transforms:
+      ops:
+        - {type: LetterBox, size: [640, 640], fill: 114}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}
