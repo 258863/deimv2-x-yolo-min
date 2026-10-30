@@ -1,5 +1,10 @@
 __include__: ['deimv2_dinov3_x_yolo.yml']
 
+# Own output_dir so this doesn't share/overwrite checkpoints with the plain
+# deimv2_dinov3_x_yolo.yml run (both configs otherwise inherit the same
+# ./outputs/deimv2_dinov3_x_yolo from deimv2_dinov3_x_coco.yml).
+output_dir: ./outputs/deimv2_dinov3_x_yolo_innovations
+
 # Experimental: turns on the same two "innovation" modules used in the classification
 # experiments (configs/classification/ablation_20261014/full_*.yml) for the detection
 # backbone. Nothing else changes vs deimv2_dinov3_x_yolo.yml.
