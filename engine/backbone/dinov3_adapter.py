@@ -93,8 +93,57 @@ class DINOv3STAs(nn.Module):
         use_sta=True,
         conv_inplane=16,
         hidden_dim=None,
+        # Optional innovations, ported from classification/model.py so detection configs can opt
+        # into the same STA cross-branch exchange / DEG axis-fusion modules. All default to the
+        # prior behavior (disabled), so existing configs are unaffected.
+        sta_variant="baseline",
+        sta_bottleneck_dim=64,
+        sta_adapter_stages=("conv3",),
+        cross_branch_interaction=False,
+        module_dim=64,
+        interaction_direction="bidirectional",
+        guidance_max_ratio=None,
+        interaction_type="residual",
+        interaction_position="fusion",
+        fusion_deg=False,
+        fusion_deg_direction=True,
+        fusion_deg_axis=True,
+        fusion_deg_gate=True,
+        fusion_deg_stage="c3",
+        fusion_deg_position="post_fusion",
+        fusion_deg_residual_scale=1.0,
+        fusion_deg_max_ratio=None,
+        fusion_deg_direction_source="projected",
     ):
         super(DINOv3STAs, self).__init__()
+
+        # --- validate the optional innovations up front (same checks as classification/model.py) ---
+        if sta_variant not in ("baseline", "r1", "s1", "s1_ca", "s1_x"):
+            raise ValueError(f"Unknown STA variant: {sta_variant}")
+        if fusion_deg_stage not in ("c3", "c4"):
+            raise ValueError(f"Unknown fusion DEG stage: {fusion_deg_stage}")
+        if fusion_deg_position not in ("pre_fusion", "post_fusion"):
+            raise ValueError(f"Unknown fusion DEG position: {fusion_deg_position}")
+        if fusion_deg_direction_source not in ("projected", "spatial"):
+            raise ValueError(f"Unknown DEG direction source: {fusion_deg_direction_source}")
+        if fusion_deg and fusion_deg_direction_source == "spatial" and not fusion_deg_direction:
+            raise ValueError("Spatial direction source requires the direction encoder")
+        if interaction_type not in ("residual", "joint_gate"):
+            raise ValueError(f"Unknown interaction type: {interaction_type}")
+        if interaction_position not in ("fusion", "pre_s1_ca"):
+            raise ValueError(f"Unknown interaction position: {interaction_position}")
+        sta_adapter_stages = tuple(sta_adapter_stages)
+        if interaction_position == "pre_s1_ca":
+            if (not cross_branch_interaction or interaction_type != "residual"
+                    or interaction_direction not in ("semantic_to_spatial", "bidirectional")
+                    or sta_variant != "s1_ca" or sta_adapter_stages != ("conv3",)):
+                raise ValueError("pre_s1_ca requires residual interaction and S1-CA at conv3 only")
+        if interaction_type == "joint_gate":
+            if not cross_branch_interaction or interaction_direction != "semantic_to_spatial":
+                raise ValueError("joint_gate requires cross_branch_interaction and semantic_to_spatial")
+            if guidance_max_ratio is not None:
+                raise ValueError("guidance_max_ratio applies only to residual guidance, not joint_gate")
+
         if 'dinov3' in name:
             self.dinov3 = DinoVisionTransformer(name=name)
             if weights_path is not None and os.path.exists(weights_path):
@@ -139,6 +188,65 @@ class DINOv3STAs(nn.Module):
             nn.SyncBatchNorm(hidden_dim),
             nn.SyncBatchNorm(hidden_dim)
         ])
+
+        # --- attach the optional innovations (mirrors classification/model.py's wiring) ---
+        self.interaction_position = interaction_position
+
+        if sta_variant != "baseline":
+            if not use_sta:
+                raise ValueError(f"{sta_variant.upper()} requires use_sta=True")
+            from classification.modules import STACDFFNReference, STASpatialControl
+            adapter_class = STACDFFNReference if sta_variant == "r1" else STASpatialControl
+            module_name = "cdffn_r1" if sta_variant == "r1" else "spatial_s1"
+            allowed_stages = {"conv2", "conv3", "conv4"}
+            if (not sta_adapter_stages or len(sta_adapter_stages) != len(set(sta_adapter_stages))
+                    or not set(sta_adapter_stages) <= allowed_stages):
+                raise ValueError("sta_adapter_stages must contain unique conv2/conv3/conv4 names")
+            with torch.random.fork_rng(devices=[]):
+                adapter_options = {"channel_attention": True} if sta_variant == "s1_ca" else {}
+                if sta_variant == "s1_x":
+                    adapter_options = {"branch_exchange": True}
+                channels = {"conv2": conv_inplane * 2, "conv3": conv_inplane * 4, "conv4": conv_inplane * 4}
+                for stage in sta_adapter_stages:
+                    getattr(self.sta, stage).add_module(
+                        module_name, adapter_class(channels[stage], sta_bottleneck_dim, **adapter_options)
+                    )
+
+        if cross_branch_interaction:
+            if not use_sta:
+                raise ValueError("Semantic-spatial interaction requires use_sta=True")
+            from classification.modules import SemanticSpatialExchange, SemanticSpatialJointGate
+            with torch.random.fork_rng(devices=[]):
+                if interaction_type == "joint_gate":
+                    self.semantic_spatial_exchange = SemanticSpatialJointGate(
+                        semantic_channels=self.dinov3.embed_dim,
+                        spatial_channels=conv_inplane * 4,
+                        hidden_channels=module_dim,
+                    )
+                else:
+                    self.semantic_spatial_exchange = SemanticSpatialExchange(
+                        semantic_channels=self.dinov3.embed_dim,
+                        spatial_channels=conv_inplane * 4,
+                        hidden_channels=module_dim,
+                        direction=interaction_direction,
+                        guidance_max_ratio=guidance_max_ratio,
+                    )
+
+        if fusion_deg:
+            if not use_sta:
+                raise ValueError("Fusion DEG requires use_sta=True")
+            from classification.modules import DEGAxisAdapter
+            self.fusion_deg_stage = fusion_deg_stage
+            self.fusion_deg_position = fusion_deg_position
+            self.fusion_deg_direction_source = fusion_deg_direction_source
+            fusion_conv = self.convs[1 if fusion_deg_stage == "c3" else 2]
+            channels = fusion_conv.in_channels if fusion_deg_position == "pre_fusion" else fusion_conv.out_channels
+            with torch.random.fork_rng(devices=[]):
+                self.deg_axis_adapter = DEGAxisAdapter(
+                    channels=channels, hidden_channels=module_dim,
+                    use_direction=fusion_deg_direction, use_axis=fusion_deg_axis, use_gate=fusion_deg_gate,
+                    residual_scale=fusion_deg_residual_scale, max_ratio=fusion_deg_max_ratio,
+                )
 
     def forward(self, x):
         # Code for matching with oss

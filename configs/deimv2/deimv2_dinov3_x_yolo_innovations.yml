@@ -1,0 +1,33 @@
+__include__: ['deimv2_dinov3_x_yolo.yml']
+
+# Experimental: turns on the same two "innovation" modules used in the classification
+# experiments (configs/classification/ablation_20261014/full_*.yml) for the detection
+# backbone. Nothing else changes vs deimv2_dinov3_x_yolo.yml.
+#
+# - cross_branch_interaction / interaction_*: STA cross-branch spatial<->semantic
+#   exchange (classification/modules/semantic_spatial_exchange.py), inserted right
+#   before the S1-CA adapter at conv3 (interaction_position: pre_s1_ca requires
+#   sta_variant: s1_ca and sta_adapter_stages: [conv3]).
+# - fusion_deg / fusion_deg_*: DEG axis-fusion adapter (classification/modules/deg_axis_adapter.py),
+#   applied to the c3 feature before it's fused with the semantic branch, using the raw
+#   spatial (CNN) feature as the direction source.
+#
+# This exact combination has only been validated on the classification task so far --
+# it has not been trained/evaluated for detection. Shapes are compatible (both modules
+# are channel-preserving residual adapters, zero-initialized so they start near-identity),
+# but treat accuracy/speed here as unverified until you've run it.
+DINOv3STAs:
+  sta_variant: s1_ca
+  sta_bottleneck_dim: 64
+  sta_adapter_stages: [conv3]
+  cross_branch_interaction: true
+  interaction_direction: bidirectional
+  interaction_position: pre_s1_ca
+  module_dim: 64
+  fusion_deg: true
+  fusion_deg_stage: c3
+  fusion_deg_position: pre_fusion
+  fusion_deg_direction_source: spatial
+  fusion_deg_direction: true
+  fusion_deg_axis: true
+  fusion_deg_gate: true
