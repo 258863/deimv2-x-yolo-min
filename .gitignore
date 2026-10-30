@@ -2,3 +2,5 @@
 # git push). Place the checkpoint locally at the path below before training
 # or inference:
 ckpts/deimv2_coco/DEIMv2_DINOv3_X_COCO/model.pth
+__pycache__/
+*.pyc
