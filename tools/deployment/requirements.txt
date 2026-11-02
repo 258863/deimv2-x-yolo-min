@@ -1,0 +1,5 @@
+numpy
+onnx>=1.16
+onnxruntime>=1.18
+# Install CUDA-compatible PyTorch/torchvision separately.
+# On the validated Windows/CUDA12 host: pip install tensorrt-cu12==10.13.3.9

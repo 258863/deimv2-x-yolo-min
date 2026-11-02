@@ -4,3 +4,9 @@
 ckpts/deimv2_coco/DEIMv2_DINOv3_X_COCO/model.pth
 __pycache__/
 *.pyc
+
+# Local deployment artifacts and validation caches
+artifacts/
+*.engine
+*.onnx
+*.npz

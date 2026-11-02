@@ -15,6 +15,14 @@ now lets the detection backbone opt into the same two modules (see
 `configs/deimv2/deimv2_dinov3_x_yolo_innovations.yml` below) -- that wiring
 has not been trained/evaluated for detection yet, only for classification.
 
+## TensorRT deployment
+
+See [tools/deployment/README.md](tools/deployment/README.md) for the verified
+fixed-640 ONNX layout repair, FP16 mixed-precision build with FP32-sensitive
+layers, strict FP32 control, and input-tensor parity checks. This is not INT8
+quantization. Model binaries are transferred separately and must be validated
+on the deployment GPU.
+
 ## Setup on the new machine
 1. `pip install -r requirements.txt` (plus torch/torchvision matching your CUDA).
 2. Point `configs/deimv2/deimv2_dinov3_x_yolo.yml`'s `yolo_data:` at your

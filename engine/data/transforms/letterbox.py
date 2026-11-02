@@ -18,6 +18,9 @@ class LetterBox(Transform):
         self.fill = fill
 
     def forward(self, image, target=None):
+        if isinstance(image, (tuple, list)):
+            transformed_image, transformed_target = self.forward(image[0], image[1])
+            return (transformed_image, transformed_target, *image[2:])
         original_w, original_h = image.size if isinstance(image, Image.Image) else (image.shape[-1], image.shape[-2])
         target_w, target_h = self.size
         gain = min(target_w / original_w, target_h / original_h)
@@ -47,6 +50,11 @@ class LetterBox(Transform):
             boxes[..., 1::2] *= resized_h / original_h
             boxes[..., 0::2] += left
             boxes[..., 1::2] += top
+            from torchvision import tv_tensors
+            if isinstance(target['boxes'], tv_tensors.BoundingBoxes):
+                boxes = tv_tensors.BoundingBoxes(
+                    boxes, format=target['boxes'].format, canvas_size=(target_h, target_w)
+                )
             target['boxes'] = boxes
         target['letterbox_gain'] = torch.tensor([resized_w / original_w, resized_h / original_h], dtype=torch.float32)
         target['letterbox_pad'] = torch.tensor([left, top], dtype=torch.float32)
