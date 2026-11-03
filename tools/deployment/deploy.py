@@ -26,16 +26,56 @@ def new_file(path):
     return path
 
 
+def parse_names(value):
+    """Validate an ordered list of class labels from CLI or model metadata."""
+    labels = [name.strip() for name in value.split(',')] if isinstance(value, str) else value
+    if (not isinstance(labels, list) or not labels
+            or not all(isinstance(name, str) and name.strip() for name in labels)
+            or len(set(labels)) != len(labels)):
+        raise ValueError('Class names must be nonempty and unique')
+    return list(labels)
+
+
+def resolve_names(explicit=None, stored=None):
+    requested = parse_names(explicit) if explicit is not None else None
+    saved = parse_names(stored) if stored is not None else None
+    if requested is not None and saved is not None and requested != saved:
+        raise ValueError('Explicit class names/order conflict with saved model metadata')
+    return requested if requested is not None else saved
+
+
+def export_options(data=None, names=None):
+    """Configure class count without opening a dataset when names are supplied."""
+    if data is not None and names is not None:
+        raise ValueError('Use either --data or --names, not both')
+    if names is not None:
+        labels = parse_names(names)
+        return {'yolo_data': None, 'num_classes': len(labels),
+                'remap_mscoco_category': False}
+    return {'yolo_data': str(Path(data).resolve())} if data else {}
+
+
 def export(args):
     import torch
     from engine.core import YAMLConfig
 
     output = new_file(args.output)
-    options = {'yolo_data': str(Path(args.data).resolve())} if args.data else {}
+    state = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+    names = resolve_names(args.names, state.get('names'))
+    if args.data:
+        from engine.data.dataset.yolo_dataset import read_yolo_metadata
+        _, data_names, _ = read_yolo_metadata(args.data)
+        names = resolve_names(data_names, names)
+    options = export_options(names=names) if names is not None else export_options(data=args.data)
     cfg = YAMLConfig(str(Path(args.config).resolve()), **options)
+    if names is None and cfg.yaml_cfg.get('yolo_data'):
+        from engine.data.dataset.yolo_dataset import read_yolo_metadata
+        _, names, _ = read_yolo_metadata(cfg.yaml_cfg['yolo_data'])
+        names = parse_names(names)
+    if names is not None and 'num_classes' in state and state['num_classes'] != len(names):
+        raise ValueError('Checkpoint num_classes does not match names')
     cfg.yaml_cfg['DINOv3STAs']['weights_path'] = None
     model = cfg.model
-    state = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     weights = state['ema']['module'] if 'ema' in state else state['model']
     model.load_state_dict(weights, strict=True)
     model.to(args.device).eval()
@@ -54,7 +94,17 @@ def export(args):
                           input_names=['images'], output_names=['pred_logits','pred_boxes'],
                           opset_version=17, dynamo=False, do_constant_folding=True)
     import onnx
-    onnx.checker.check_model(onnx.load(output))
+    graph = onnx.load(output)
+    properties = {}
+    if names is not None:
+        properties.update(names=json.dumps(names, ensure_ascii=False), num_classes=str(len(names)))
+    if state.get('model_name') is not None:
+        if not isinstance(state['model_name'], str) or not state['model_name'].strip():
+            raise ValueError('Checkpoint model_name must be a nonempty string')
+        properties['model_name'] = state['model_name']
+    onnx.helper.set_model_props(graph, properties)
+    onnx.checker.check_model(graph)
+    onnx.save(graph, output)
     print(output)
 
 
@@ -113,9 +163,11 @@ def build(args):
     dims = [d.dim_value for d in model.graph.input[0].type.tensor_type.shape.dim]
     if dims != [1,3,640,640] or {o.name for o in model.graph.output} != {'pred_logits','pred_boxes'}:
         raise ValueError('Unsupported engine contract')
-    names = [s.strip() for s in args.names.split(',')]
-    if not all(names) or len(set(names)) != len(names):
-        raise ValueError('Class names must be nonempty and unique')
+    props = {item.key: item.value for item in model.metadata_props}
+    stored = json.loads(props['names']) if 'names' in props else None
+    names = resolve_names(args.names, stored)
+    if names is None:
+        raise ValueError('ONNX has no class names; supply --names in training class order')
     logits = next(o for o in model.graph.output if o.name == 'pred_logits')
     classes = logits.type.tensor_type.shape.dim[-1].dim_value
     if classes != len(names):
@@ -160,6 +212,8 @@ def build(args):
                 'gpu':torch.cuda.get_device_name(args.device), 'tensorrt_version':trt.__version__,
                 'precision':args.precision, 'tf32':config.get_flag(trt.BuilderFlag.TF32),
                 'build_seconds':time.perf_counter()-start, 'validation':'pending_on_target_machine'}
+    if props.get('model_name'):
+        metadata['model_name'] = props['model_name']
     (output/'model.json').write_text(json.dumps(metadata,indent=2),encoding='utf-8')
     (output/'fp32_protected_layers.json').write_text(json.dumps(protected,indent=2),encoding='utf-8')
     print(output)
@@ -171,7 +225,9 @@ def main():
     p = commands.add_parser('export')
     p.add_argument('--config',required=True)
     p.add_argument('--checkpoint',required=True)
-    p.add_argument('--data')
+    classes = p.add_mutually_exclusive_group()
+    classes.add_argument('--data', help='YOLO dataset YAML used to determine class count')
+    classes.add_argument('--names', help='Ordered comma-separated classes; bypasses dataset YAML')
     p.add_argument('--device',default='cpu')
     p.add_argument('--output',required=True)
     p.set_defaults(run=export)
@@ -184,7 +240,7 @@ def main():
     p.add_argument('--onnx',required=True)
     p.add_argument('--output',required=True)
     p.add_argument('--precision',choices=['fp32','fp16mix'],default='fp16mix')
-    p.add_argument('--names',required=True,help='Ordered comma-separated model class names')
+    p.add_argument('--names',help='Ordered classes; defaults to ONNX metadata')
     p.add_argument('--device',type=int,default=0)
     p.set_defaults(run=build)
     args = parser.parse_args()

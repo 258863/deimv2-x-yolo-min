@@ -18,10 +18,10 @@ python -m pip install tensorrt-cu12==10.13.3.9
 ## 1. 导出原始ONNX
 
 ```powershell
-python tools/deployment/deploy.py export --config configs/deimv2/deimv2_dinov3_x_yolo.yml --data D:/dataset/data.yaml --checkpoint D:/run/final_epoch.pth --device cuda:0 --output artifacts/model_raw.onnx
+python tools/deployment/deploy.py export --config configs/deimv2/deimv2_dinov3_x_yolo.yml --checkpoint D:/run/final_epoch.pth --device cuda:0 --output artifacts/model_raw.onnx
 ```
 
-自动选择checkpoint的`ema.module`（存在时）或`model`。严格匹配模型参数，类别数由config/data.yaml确定；仅接受可信checkpoint（torch.load使用weights_only=False）。不调用deploy()结构转换，导出opset17、固定shape、FP32原始pred_logits/pred_boxes。输出已存在时拒绝覆盖。
+自动选择checkpoint的`ema.module`（存在时）或`model`。默认从新版训练checkpoint自动读取`names`/`num_classes`，无需填写`--names`或`--data`。只有旧checkpoint缺少名称时，才需用`--names`或`--data`补充（两者互斥），或使用配置中的有效数据路径。导出会将名称和类别数写入ONNX metadata，`patch`会保留，`build`会自动读取。显式名称与已有元信息冲突时拒绝。严格匹配模型参数；仅接受可信checkpoint（torch.load使用weights_only=False）。不调用deploy()结构转换，导出opset17、固定shape、FP32原始pred_logits/pred_boxes。输出已存在时拒绝覆盖。
 
 ## 2. 等价修正特征布局
 
@@ -45,8 +45,8 @@ NPZ每个key是一张图的float32 `[1,3,640,640]` 输入。RGB、PIL bilinear r
 ## 3. 构建engine
 
 ```powershell
-python tools/deployment/deploy.py build --onnx artifacts/model_fixed.onnx --output artifacts/trt_fp16mix --precision fp16mix --names hd,lx,sxbcj --device 0
-python tools/deployment/deploy.py build --onnx artifacts/model_fixed.onnx --output artifacts/trt_fp32 --precision fp32 --names hd,lx,sxbcj --device 0
+python tools/deployment/deploy.py build --onnx artifacts/model_fixed.onnx --output artifacts/trt_fp16mix --precision fp16mix --device 0
+python tools/deployment/deploy.py build --onnx artifacts/model_fixed.onnx --output artifacts/trt_fp32 --precision fp32 --device 0
 ```
 
 类别名称必须与当前模型类别数量、顺序一致；六类模型请填写六类名称。输出目录必须不存在。每次产生`model.engine`、`model.json`、`fp32_protected_layers.json`，记录输入shape、类别、GPU、TensorRT版本、ONNX/engine SHA256、构建时间及未验收状态。

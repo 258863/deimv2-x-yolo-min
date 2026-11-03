@@ -29,6 +29,11 @@ def remove_module_prefix(state_dict):
 class BaseSolver(object):
     def __init__(self, cfg: BaseConfig) -> None:
         self.cfg = cfg
+        self.model_name = getattr(cfg, 'yaml_cfg', {}).get('model_name')
+        if self.model_name is not None:
+            if not isinstance(self.model_name, str) or not self.model_name.strip():
+                raise ValueError('model_name must be a nonempty string')
+            self.model_name = self.model_name.strip()
         self.obj365_ids = [
             0, 46, 5, 58, 114, 55, 116, 65, 21, 40, 176, 127, 249, 24, 56, 139, 92, 78, 99, 96,
             144, 295, 178, 180, 38, 39, 13, 43, 120, 219, 148, 173, 165, 154, 137, 113, 145, 146,
@@ -90,6 +95,11 @@ class BaseSolver(object):
             self.cfg.val_dataloader, shuffle=self.cfg.val_dataloader.shuffle
         )
 
+        # Store names from the dataset actually used by this run, in class-ID order.
+        dataset_names = getattr(self.train_dataloader.dataset, 'class_names', None)
+        if dataset_names is not None:
+            self.class_names = list(dataset_names)
+
         self.evaluator = self.cfg.evaluator
 
         # NOTE: Instantiating order
@@ -126,10 +136,25 @@ class BaseSolver(object):
                 v = dist_utils.de_parallel(v)
                 state[k] = v.state_dict()
 
+        if getattr(self, 'model_name', None) is not None:
+            state['model_name'] = self.model_name
+        names = getattr(self, 'class_names', None)
+        if names is not None:
+            state['names'] = list(names)
+            state['num_classes'] = len(names)
+
         return state
 
     def load_state_dict(self, state):
         """Load state dict, train/eval"""
+        # Resuming must preserve class-ID meaning; tuning may use different classes.
+        names = getattr(self, 'class_names', None)
+        if names is not None and 'names' in state and list(state['names']) != list(names):
+            raise ValueError('Checkpoint class names/order do not match the training dataset')
+        if getattr(self, 'model_name', None) is None and state.get('model_name') is not None:
+            if not isinstance(state['model_name'], str) or not state['model_name'].strip():
+                raise ValueError('Checkpoint model_name must be a nonempty string')
+            self.model_name = state['model_name'].strip()
         if 'last_epoch' in state:
             self.last_epoch = state['last_epoch']
             print('Load last_epoch')
