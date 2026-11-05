@@ -167,8 +167,10 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
         #     target_sizes = torch.stack([t["size"] for t in targets], dim=0)
         #     results = postprocessor['segm'](results, outputs, orig_target_sizes, target_sizes)
 
-        res = {target['image_id'].item(): output for target, output in zip(targets, results)}
-        if coco_evaluator is not None:
+        # Multi-task: images classified but deliberately not boxed are left out of mAP.
+        res = {target['image_id'].item(): output for target, output in zip(targets, results)
+               if bool(target.get('det_valid', torch.ones(1, dtype=torch.bool)).all())}
+        if coco_evaluator is not None and res:
             coco_evaluator.update(res)
 
     # gather the stats from all processes

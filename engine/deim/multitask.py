@@ -20,11 +20,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..core import register
-from ..data.image_labels import image_labels_from_targets, merge_image_labels  # noqa: F401 (re-exported)
+from ..data.image_labels import det_valid_from_targets, image_labels_from_targets, merge_image_labels  # noqa: F401
 from .deim import DEIM
 
 
-__all__ = ['DEIMMultiTask', 'ImageClassificationHead', 'ImageClassificationMeter', 'MultiTaskCriterion',
+__all__ = ['DEIMMultiTask', 'ImageClassificationHead', 'ImageClassificationMeter', 'MultiTaskCriterion', 'select_images',
            'image_labels_from_targets', 'merge_image_labels']
 
 
@@ -107,7 +107,7 @@ class MultiTaskCriterion(nn.Module):
             self.class_weights = None
 
     def forward(self, outputs, targets, **kwargs):
-        losses = self.det_criterion(outputs, targets, **kwargs)
+        losses = self.detection_losses(outputs, targets, **kwargs)
         logits = outputs.get('image_logits')
         if logits is None:
             return losses
@@ -121,6 +121,45 @@ class MultiTaskCriterion(nn.Module):
             loss = logits.sum() * 0.0  # keeps the head in the graph (DDP) when a batch has no labels
         losses['loss_image_cls'] = loss * self.image_cls_weight
         return losses
+
+
+    def detection_losses(self, outputs, targets, **kwargs):
+        """Detection losses over detection-valid images only (target['det_valid']).
+
+        Images that are classified but deliberately not boxed would otherwise teach the
+        detector that their objects are background.
+        """
+        valid = det_valid_from_targets(targets)
+        if all(valid):
+            return self.det_criterion(outputs, targets, **kwargs)
+        if not any(valid):
+            # Same loss keys on every step (needed by reduce_dict / DDP), but no gradient signal.
+            return {k: v * 0.0 for k, v in self.det_criterion(outputs, targets, **kwargs).items()}
+        keep = [i for i, flag in enumerate(valid) if flag]
+        return self.det_criterion(select_images(outputs, keep, len(targets)),
+                                  [targets[i] for i in keep], **kwargs)
+
+
+# Per-model values (not per image) that must never be sliced.
+_SHARED_KEYS = {'up', 'reg_scale', 'enc_meta'}
+
+
+def select_images(value, keep, batch_size, key=None):
+    """Take images `keep` from a (nested) decoder output: tensors are indexed on dim 0,
+    dn_meta's per-image positive indices are filtered, everything else is shared."""
+    if key in _SHARED_KEYS:
+        return value
+    if isinstance(value, torch.Tensor):
+        return value[keep] if value.dim() > 0 and value.shape[0] == batch_size else value
+    if isinstance(value, dict):
+        if key == 'dn_meta':
+            meta = dict(value)
+            meta['dn_positive_idx'] = [value['dn_positive_idx'][i] for i in keep]
+            return meta
+        return {k: select_images(v, keep, batch_size, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [select_images(v, keep, batch_size) for v in value]
+    return value
 
 
 class ImageClassificationMeter:

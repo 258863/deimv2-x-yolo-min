@@ -25,7 +25,7 @@ from PIL import Image, ImageDraw
 import os
 from collections import defaultdict, deque
 
-from .image_labels import merge_image_labels
+from .image_labels import merge_det_valid, merge_image_labels
 
 
 __all__ = [
@@ -198,6 +198,10 @@ class BatchImageCollateFunction(BaseCollateFunction):
                 if 'image_label' in targets[i]:
                     updated_targets[i]['image_label'] = merge_image_labels(
                         targets[i]['image_label'], shifted_targets[i]['image_label'])
+                # An unboxed (detection-ignored) image blended in hides objects without boxes.
+                if 'det_valid' in targets[i]:
+                    updated_targets[i]['det_valid'] = merge_det_valid(
+                        targets[i]['det_valid'], shifted_targets[i]['det_valid'])
             targets = updated_targets
 
         elif (self.copyblend_epochs[0] <= self.epoch < self.copyblend_epochs[-1] and random.random() < self.copyblend_prob):

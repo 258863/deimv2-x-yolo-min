@@ -29,8 +29,32 @@ image_labels: image_labels.csv                  # 或 folder
 | `image_labels.csv` | 两列 `image,label`。`image` 可写相对 `path` 的路径、文件名或不带后缀的文件名；`label` 写类别名或序号。也可按划分分开：`{train: train.csv, val: val.csv}` |
 | `folder` | 图片的上一级文件夹名就是类别：`images/train/缺件/0001.jpg`（标注在 `labels/train/缺件/0001.txt`） |
 
+- CSV 的列名也可以是 `file` / `file_name` / `path`（图片）和 `class_name` / `class_id`（类别），rcclz 的 `manifest.csv` 可以直接用。
 - 没有分类标签的图片只参与检测（训练开始时会提示有多少张）。
-- 没有框标注（没有 txt 或 txt 为空）的图片按“没有目标”参与检测，这和原来的 YOLO 读取方式一样。**如果某张缺陷图只是没画框，它会被当成负样本**——这种图要么补框，要么先不要放进来。
+- 没有框标注的图片默认按“没有目标”参与检测。**故意不画框的类别**写进 `det_ignore_classes`：
+
+```yaml
+det_ignore_classes: [3]     # 或写类别名：[少锡膏偏移]
+```
+
+  这些图只算分类损失：检测损失里把它们整张去掉（不当背景），验证时也不计入 mAP。拼图增强（Mosaic / MixUp）只要拼进了这种图，那张拼图的检测损失同样跳过。
+
+## rcclz_multitask
+
+数据集文件夹里已经放好 `deimv2_multitask.yaml`（`path: .`，整个文件夹拷到哪都不用改），并对过一遍：
+
+| 划分 | OK | 翻帖 | 缺件 | 少锡膏偏移（只分类） | 立碑浮高侧立 |
+|---|---|---|---|---|---|
+| train | 499 | 95 | 244 | 262 | 37 |
+| val | 129 | 24 | 61 | 66 | 9 |
+
+每张检测图正好 1 个框、框类别 = 整图类别；少锡膏偏移全部无框；所有图片都有分类标签。专用配置 `deimv2_dinov3_x_yolo_multitask_rcclz.yml` 带上了类别权重 `[0.456, 2.394, 0.932, 0.868, 6.146]`：
+
+```bash
+python train.py -c configs/deimv2/deimv2_dinov3_x_yolo_multitask_rcclz.yml \
+  -t ckpts/deimv2_coco/DEIMv2_DINOv3_X_COCO/model.pth --use-amp --seed 42 -d cuda \
+  -u yolo_data=/abs/path/rcclz_multitask/deimv2_multitask.yaml
+```
 
 ## 数据增强与分类标签
 
@@ -86,4 +110,4 @@ Image classification: accuracy 0.9312  macro-F1 0.9105  (1520 labelled images)
 python -m unittest tests/test_multitask.py -v
 ```
 
-覆盖：CSV / 文件夹两种标签读取、增强时标签合并规则、损失（忽略无标签图、整批无标签）、准确率与混淆矩阵、用真实 X 配置建模型并跑一次前向 + 反向、普通检测权重能加载进多任务模型。
+覆盖：CSV / 文件夹两种标签读取、manifest 式列名、`det_ignore_classes`（检测损失去掉这些图、整批都是时损失为 0）、增强时标签合并规则、损失（忽略无标签图、整批无标签）、准确率与混淆矩阵、用真实 X 配置建模型并跑一次前向 + 反向、普通检测权重能加载进多任务模型。

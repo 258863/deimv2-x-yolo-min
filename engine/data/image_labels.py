@@ -28,3 +28,22 @@ def image_labels_from_targets(targets, device=None) -> torch.Tensor:
             continue
         labels.append(int(merge_image_labels(value)[0]))
     return torch.tensor(labels, dtype=torch.long, device=device)
+
+
+# ----- detection-valid flag ------------------------------------------------------------------
+# Some images have an image class but no boxes *on purpose* (e.g. a defect that is only
+# classified).  They must not be used as detection background: target['det_valid'] = [False]
+# makes the multi-task criterion drop them from the detection losses and the evaluator skip
+# them for mAP.  Blends (Mosaic / MixUp) are detection-valid only if every source is.
+
+def merge_det_valid(*flags: torch.Tensor) -> torch.Tensor:
+    values = torch.cat([flag.reshape(-1).bool() for flag in flags])
+    return torch.tensor([bool(values.all())], dtype=torch.bool)
+
+
+def det_valid_from_targets(targets) -> list:
+    result = []
+    for target in targets:
+        flag = target.get('det_valid')
+        result.append(True if flag is None else bool(flag.reshape(-1).bool().all()))
+    return result

@@ -160,10 +160,14 @@ def read_image_label_table(path, names):
     table = {}
     with Path(path).open(newline='', encoding='utf-8-sig') as stream:
         reader = csv.DictReader(stream)
-        if not reader.fieldnames or not {'image', 'label'} <= set(reader.fieldnames):
-            raise ValueError(f'{path}: expected columns image,label')
+        fields = set(reader.fieldnames or ())
+        image_column = next((c for c in ('image', 'file', 'file_name', 'path') if c in fields), None)
+        label_column = next((c for c in ('label', 'class_name', 'class_id', 'cls_id') if c in fields), None)
+        if image_column is None or label_column is None:
+            raise ValueError(f'{path}: expected an image column (image/file/file_name/path) '
+                             f'and a label column (label/class_name/class_id)')
         for line, row in enumerate(reader, start=2):
-            raw = (row['label'] or '').strip()
+            raw = (row[label_column] or '').strip()
             if raw == '':
                 continue
             if raw in names:
@@ -172,7 +176,7 @@ def read_image_label_table(path, names):
                 label = int(raw)
             else:
                 raise ValueError(f'{path}:{line}: unknown image label {raw!r}')
-            key = row['image'].strip().replace('\\', '/')
+            key = row[image_column].strip().replace('\\', '/')
             if key in table and table[key] != label:
                 raise ValueError(f'{path}:{line}: conflicting labels for {key}')
             table[key] = label
@@ -188,6 +192,9 @@ class YoloMultiTask(YoloDetection):
         image_labels: image_labels.csv   # columns image,label  -- or `folder`: the image's parent
                                          # folder name is its class (images/train/<class>/x.jpg)
     Labels in the CSV may also be per split: image_labels: {train: a.csv, val: b.csv}.
+    The CSV may use image/file/file_name/path and label/class_name/class_id columns.
+        det_ignore_classes: [3]          # image classes with no boxes on purpose: those images
+                                         # train classification only (target['det_valid'] = False)
     """
     __inject__ = ['transforms']
     __share__ = ['num_classes', 'remap_mscoco_category']
@@ -224,6 +231,13 @@ class YoloMultiTask(YoloDetection):
                     pass
                 keys += [path.name, path.stem]
                 self.image_labels[image_id] = next((table[key] for key in keys if key in table), -1)
+        # Classes that are classified but deliberately not boxed: never detection background.
+        ignore = metadata.get('det_ignore_classes') or []
+        self.det_ignore_classes = sorted({names.index(c) if isinstance(c, str) else int(c) for c in ignore})
+        if any(not 0 <= c < len(names) for c in self.det_ignore_classes):
+            raise ValueError(f'{data_yaml}: det_ignore_classes must be image class names or indices')
+        self.det_valid = {image_id: label not in self.det_ignore_classes for image_id, label in self.image_labels.items()}
+
         missing = sum(label < 0 for label in self.image_labels.values())
         if missing == len(self.image_labels):
             raise ValueError(f'YOLO {split}: no image has a classification label; check image_labels in {data_yaml}')
@@ -235,6 +249,7 @@ class YoloMultiTask(YoloDetection):
         import torch
         image, target = super().load_item(idx)
         target['image_label'] = torch.tensor([self.image_labels[self.ids[idx]]], dtype=torch.long)
+        target['det_valid'] = torch.tensor([self.det_valid[self.ids[idx]]], dtype=torch.bool)
         return image, target
 
     def __getitem__(self, idx):

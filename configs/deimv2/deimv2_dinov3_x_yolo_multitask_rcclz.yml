@@ -1,0 +1,15 @@
+__include__: ['deimv2_dinov3_x_yolo_multitask.yml']
+
+# rcclz_multitask (rcclz_clean_split_20261013_seed2035): 256x256 component crops, letterboxed to 640.
+#   classes: OK / 翻帖 / 缺件 / 少锡膏偏移 / 立碑浮高侧立 ; one box per image, box class = image class
+#   少锡膏偏移 has no boxes -> det_ignore_classes: [3] in the dataset yaml (classification only)
+# Dataset yaml: <rcclz_multitask>/deimv2_multitask.yaml
+#   python train.py -c configs/deimv2/deimv2_dinov3_x_yolo_multitask_rcclz.yml \
+#     -t ckpts/deimv2_coco/DEIMv2_DINOv3_X_COCO/model.pth --use-amp --seed 42 -d cuda \
+#     -u yolo_data=/abs/path/rcclz_multitask/deimv2_multitask.yaml
+
+output_dir: ./outputs/deimv2_dinov3_x_yolo_multitask_rcclz
+
+MultiTaskCriterion:
+  # inverse class frequency on the training split (from rcclz_multitask/multitask.yaml)
+  class_weights: [0.456, 2.394, 0.932, 0.868, 6.146]

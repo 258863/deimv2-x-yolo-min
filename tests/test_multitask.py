@@ -10,8 +10,8 @@ import torch.nn as nn
 import yaml
 
 from engine.data.dataset.yolo_dataset import YoloMultiTask
-from engine.data.image_labels import image_labels_from_targets, merge_image_labels
-from engine.deim.multitask import DEIMMultiTask, ImageClassificationMeter, MultiTaskCriterion
+from engine.data.image_labels import det_valid_from_targets, image_labels_from_targets, merge_det_valid, merge_image_labels
+from engine.deim.multitask import DEIMMultiTask, ImageClassificationMeter, MultiTaskCriterion, select_images
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,10 +20,12 @@ IMAGE_NAMES = ['OK', 'shift', 'tombstone']
 
 
 def make_dataset(root: Path, labels='csv'):
-    """Two splits; per split: ok.jpg (no boxes), shift.jpg (1 box), unlabeled.jpg (box, no class)."""
+    """Two splits; per split: ok.jpg (no boxes), shift.jpg (1 box), unlabeled.jpg (box, no class),
+    tomb.jpg (class 'tombstone', deliberately no boxes -> det_ignore_classes, like rcclz 少锡膏偏移)."""
     rows = ['image,label']
     for split in ('train', 'val'):
-        for name, box, cls in (('ok', None, 'OK'), ('shift', '0 0.5 0.5 0.4 0.5', 'shift'), ('unlabeled', '0 0.3 0.3 0.2 0.2', None)):
+        for name, box, cls in (('ok', None, 'OK'), ('shift', '0 0.5 0.5 0.4 0.5', 'shift'), ('unlabeled', '0 0.3 0.3 0.2 0.2', None),
+                                ('tomb', None, 'tombstone')):
             sub = (cls or 'misc') if labels == 'folder' else ''
             folder = root / 'images' / split / sub
             label_dir = root / 'labels' / split / sub
@@ -35,7 +37,8 @@ def make_dataset(root: Path, labels='csv'):
                 rows.append(f'images/{split}/{sub + "/" if sub else ""}{name}.jpg,{cls}')
     (root / 'image_labels.csv').write_text('\n'.join(rows) + '\n', encoding='utf-8')
     data = dict(path='.', train='images/train', val='images/val', names=['defect'],
-                image_names=IMAGE_NAMES, image_labels='folder' if labels == 'folder' else 'image_labels.csv')
+                image_names=IMAGE_NAMES, image_labels='folder' if labels == 'folder' else 'image_labels.csv',
+                det_ignore_classes=['tombstone'])
     (root / 'data.yaml').write_text(yaml.safe_dump(data, allow_unicode=True), encoding='utf-8')
     return root / 'data.yaml'
 
@@ -72,16 +75,30 @@ class DatasetTests(unittest.TestCase):
             warnings.simplefilter('always')
             dataset = YoloMultiTask(data_yaml, split='train')
         self.assertEqual(dataset.image_class_names, IMAGE_NAMES)
-        self.assertEqual(self.labels_by_name(dataset), {'ok': [0], 'shift': [1], 'unlabeled': [-1]})
+        self.assertEqual(self.labels_by_name(dataset), {'ok': [0], 'shift': [1], 'unlabeled': [-1], 'tomb': [2]})
         self.assertTrue(any('detection only' in str(w.message) for w in caught))
 
     def test_folder_labels(self):
         data_yaml = make_dataset(self.root, 'folder')
         dataset = YoloMultiTask(data_yaml, split='val')
-        self.assertEqual(self.labels_by_name(dataset), {'ok': [0], 'shift': [1], 'unlabeled': [-1]})
+        self.assertEqual(self.labels_by_name(dataset), {'ok': [0], 'shift': [1], 'unlabeled': [-1], 'tomb': [2]})
         _, target = dataset.load_item([i for i in range(len(dataset))
                                        if 'shift' in dataset.coco.imgs[dataset.ids[i]]['file_name']][0])
         self.assertEqual(len(target['boxes']), 1)
+
+    def test_det_ignore_classes_mark_images(self):
+        dataset = YoloMultiTask(make_dataset(self.root, 'csv'), split='train')
+        flags = {Path(dataset.coco.imgs[dataset.ids[i]]['file_name']).stem: dataset.load_item(i)[1]['det_valid'].tolist()
+                 for i in range(len(dataset))}
+        self.assertEqual(flags, {'ok': [True], 'shift': [True], 'unlabeled': [True], 'tomb': [False]})
+
+    def test_manifest_style_columns(self):
+        data_yaml = make_dataset(self.root, 'csv')
+        (self.root / 'image_labels.csv').write_text(
+            '\ufeffsplit,file,class_id,class_name\ntrain,ok.jpg,0,OK\ntrain,shift.jpg,1,shift\ntrain,tomb.jpg,2,tombstone\n',
+            encoding='utf-8')
+        dataset = YoloMultiTask(data_yaml, split='train')
+        self.assertEqual(self.labels_by_name(dataset), {'ok': [0], 'shift': [1], 'unlabeled': [-1], 'tomb': [2]})
 
     def test_crop_that_removes_every_box_drops_the_class(self):
         data_yaml = make_dataset(self.root, 'csv')
@@ -104,8 +121,14 @@ class DatasetTests(unittest.TestCase):
 
 
 class FakeDetCriterion(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.seen = []
+
     def forward(self, outputs, targets, **kwargs):
-        return {'loss_det': outputs['pred_logits'].sum() * 0 + 1.0}
+        self.seen.append((outputs['pred_logits'].shape[0], len(targets),
+                          [len(i) for i in outputs.get('dn_meta', {}).get('dn_positive_idx', [])]))
+        return {'loss_det': outputs['pred_logits'].sum() + 1.0}
 
 
 class CriterionTests(unittest.TestCase):
@@ -126,6 +149,43 @@ class CriterionTests(unittest.TestCase):
                            [{'image_label': torch.tensor([-1])}, {}])
         self.assertEqual(losses['loss_image_cls'].item(), 0.0)
         losses['loss_image_cls'].backward()  # graph exists (needed for DDP)
+
+
+class DetectionIgnoreTests(unittest.TestCase):
+    def test_flags_merge_like_mosaic_and_mixup(self):
+        self.assertEqual(merge_det_valid(torch.tensor([True]), torch.tensor([False])).tolist(), [False])
+        targets = [{'det_valid': torch.tensor([True, True, True, True])}, {'det_valid': torch.tensor([True, False, True, True])}, {}]
+        self.assertEqual(det_valid_from_targets(targets), [True, False, True])
+
+    def test_ignored_images_are_removed_from_detection_losses(self):
+        det = FakeDetCriterion()
+        criterion = MultiTaskCriterion(det, num_image_classes=3)
+        pred = torch.zeros(3, 5, 2, requires_grad=True)
+        outputs = {'pred_logits': pred, 'pred_boxes': torch.zeros(3, 5, 4), 'up': torch.ones(3),
+                   'aux_outputs': [{'pred_logits': pred * 2, 'pred_boxes': torch.zeros(3, 5, 4)}],
+                   'dn_meta': {'dn_positive_idx': [torch.arange(2), torch.arange(0), torch.arange(4)],
+                               'dn_num_group': 2, 'dn_num_split': [10, 5]},
+                   'image_logits': torch.zeros(3, 3)}
+        targets = [{'det_valid': torch.tensor([True]), 'image_label': torch.tensor([0])},
+                   {'det_valid': torch.tensor([False]), 'image_label': torch.tensor([2])},
+                   {'det_valid': torch.tensor([True]), 'image_label': torch.tensor([1])}]
+        losses = criterion(outputs, targets)
+        self.assertEqual(det.seen[-1], (2, 2, [2, 4]))  # image 1 dropped everywhere, `up` untouched
+        losses['loss_det'].backward()
+        self.assertTrue(torch.all(pred.grad[1] == 0) and torch.all(pred.grad[0] == 1))
+
+    def test_batch_of_only_ignored_images_gives_zero_detection_loss(self):
+        criterion = MultiTaskCriterion(FakeDetCriterion(), num_image_classes=3)
+        outputs = {'pred_logits': torch.zeros(2, 5, 2), 'image_logits': torch.zeros(2, 3)}
+        targets = [{'det_valid': torch.tensor([False]), 'image_label': torch.tensor([2])}] * 2
+        self.assertEqual(criterion(outputs, targets)['loss_det'].item(), 0.0)
+
+    def test_select_images_keeps_shared_values(self):
+        out = select_images({'reg_scale': torch.ones(2), 'enc_meta': {'class_agnostic': False},
+                             'teacher_logits': None, 'x': torch.arange(2)}, [1], 2)
+        self.assertEqual(out['reg_scale'].tolist(), [1.0, 1.0])
+        self.assertEqual(out['x'].tolist(), [1])
+        self.assertIsNone(out['teacher_logits'])
 
 
 class MeterTests(unittest.TestCase):
@@ -177,10 +237,13 @@ class RealConfigTests(unittest.TestCase):
             self.assertEqual(cfg.yaml_cfg['train_dataloader']['dataset']['type'], 'YoloMultiTask')
 
             model.train()
-            images = torch.rand(2, 3, 640, 640)
+            images = torch.rand(3, 3, 640, 640)
+            none = dict(labels=torch.zeros(0, dtype=torch.long), boxes=torch.zeros(0, 4))
             targets = [
-                {'labels': torch.tensor([0]), 'boxes': torch.tensor([[0.5, 0.5, 0.2, 0.2]]), 'image_label': torch.tensor([1])},
-                {'labels': torch.zeros(0, dtype=torch.long), 'boxes': torch.zeros(0, 4), 'image_label': torch.tensor([0])},
+                {'labels': torch.tensor([0]), 'boxes': torch.tensor([[0.5, 0.5, 0.2, 0.2]]), 'image_label': torch.tensor([1]),
+                 'det_valid': torch.tensor([True])},
+                {**none, 'image_label': torch.tensor([2]), 'det_valid': torch.tensor([False])},  # classification only
+                {**none, 'image_label': torch.tensor([0]), 'det_valid': torch.tensor([True])},   # real background
             ]
             outputs = model(images, targets=targets)
             losses = criterion(outputs, targets, epoch=0, step=0, global_step=0, epoch_step=1)
