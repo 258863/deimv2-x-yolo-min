@@ -25,6 +25,8 @@ from PIL import Image, ImageDraw
 import os
 from collections import defaultdict, deque
 
+from .image_labels import merge_image_labels
+
 
 __all__ = [
     'DataLoader',
@@ -192,6 +194,10 @@ class BatchImageCollateFunction(BaseCollateFunction):
                     [beta] * len(targets[i]['labels']) + [1.0 - beta] * len(shifted_targets[i]['labels']), 
                     dtype=torch.float32
                     )
+                # Multi-task: a blend of two images keeps its class only if both have the same class.
+                if 'image_label' in targets[i]:
+                    updated_targets[i]['image_label'] = merge_image_labels(
+                        targets[i]['image_label'], shifted_targets[i]['image_label'])
             targets = updated_targets
 
         elif (self.copyblend_epochs[0] <= self.epoch < self.copyblend_epochs[-1] and random.random() < self.copyblend_prob):
@@ -246,6 +252,7 @@ class BatchImageCollateFunction(BaseCollateFunction):
                 blend_labels = []
                 blend_areas = []
                 blend_mixup_ratios = []
+                blend_sources = []
 
                 for idx in selected_indices:
                     # get source object information
@@ -285,6 +292,7 @@ class BatchImageCollateFunction(BaseCollateFunction):
                     blend_areas.append(area)
                     # mixup ratio
                     blend_mixup_ratios.append(1.0 - beta)
+                    blend_sources.append(source_idx)
 
                     # handle expanded area
                     if self.with_expand:
@@ -308,6 +316,11 @@ class BatchImageCollateFunction(BaseCollateFunction):
                     else:
                         updated_images[i, :, y1:y2, x1:x2] = copy_patch_orig
                     
+                # Multi-task: pasted objects from an image of another class make the class ambiguous.
+                if len(blend_boxes) > 0 and 'image_label' in targets[i]:
+                    updated_targets[i]['image_label'] = merge_image_labels(
+                        targets[i]['image_label'], *[targets[j]['image_label'] for j in blend_sources])
+
                 # add blended objects to targets
                 if len(blend_boxes) > 0:
                     blend_boxes = torch.stack(blend_boxes)

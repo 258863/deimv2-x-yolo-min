@@ -8,6 +8,7 @@ Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 
 
 from .deim import DEIM
+from .multitask import DEIMMultiTask, MultiTaskCriterion
 
 from .matcher import HungarianMatcher
 

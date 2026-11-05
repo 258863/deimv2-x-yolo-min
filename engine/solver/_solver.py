@@ -99,6 +99,9 @@ class BaseSolver(object):
         dataset_names = getattr(self.train_dataloader.dataset, 'class_names', None)
         if dataset_names is not None:
             self.class_names = list(dataset_names)
+        image_names = getattr(self.train_dataloader.dataset, 'image_class_names', None)
+        if image_names is not None:
+            self.image_class_names = list(image_names)
 
         self.evaluator = self.cfg.evaluator
 
@@ -142,6 +145,10 @@ class BaseSolver(object):
         if names is not None:
             state['names'] = list(names)
             state['num_classes'] = len(names)
+        image_names = getattr(self, 'image_class_names', None)
+        if image_names is not None:
+            state['image_names'] = list(image_names)
+            state['num_image_classes'] = len(image_names)
 
         return state
 

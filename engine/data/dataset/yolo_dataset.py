@@ -134,3 +134,117 @@ class YoloDetection(CocoDetection):
                                  info={})
         self.coco.createIndex()
         self.ids = sorted(self.coco.imgs)
+
+
+def read_image_classes(metadata, data_yaml):
+    """Image-level class names from data.yaml (`image_names`), or None for plain detection."""
+    names = metadata.get('image_names')
+    if names is None:
+        return None
+    if isinstance(names, dict):
+        if set(names) != set(range(len(names))):
+            raise ValueError(f'{data_yaml}: image_names must use consecutive integer keys starting at 0')
+        names = [names[index] for index in range(len(names))]
+    if (not isinstance(names, list) or len(names) < 2 or len(set(names)) != len(names)
+            or not all(isinstance(name, str) and name for name in names)):
+        raise ValueError(f'{data_yaml}: image_names must be at least two unique nonempty names')
+    return names
+
+
+def read_image_label_table(path, names):
+    """CSV with columns `image` and `label` (class name or index). Returns {key: index}.
+
+    `image` may be a path relative to the dataset root, an absolute path, a file name or a stem.
+    """
+    import csv
+    table = {}
+    with Path(path).open(newline='', encoding='utf-8-sig') as stream:
+        reader = csv.DictReader(stream)
+        if not reader.fieldnames or not {'image', 'label'} <= set(reader.fieldnames):
+            raise ValueError(f'{path}: expected columns image,label')
+        for line, row in enumerate(reader, start=2):
+            raw = (row['label'] or '').strip()
+            if raw == '':
+                continue
+            if raw in names:
+                label = names.index(raw)
+            elif raw.lstrip('-').isdigit() and -1 <= int(raw) < len(names):
+                label = int(raw)
+            else:
+                raise ValueError(f'{path}:{line}: unknown image label {raw!r}')
+            key = row['image'].strip().replace('\\', '/')
+            if key in table and table[key] != label:
+                raise ValueError(f'{path}:{line}: conflicting labels for {key}')
+            table[key] = label
+    return table
+
+
+@register()
+class YoloMultiTask(YoloDetection):
+    """YOLO detection plus one image-level class per image (target['image_label'], -1 = none).
+
+    data.yaml additions:
+        image_names: [OK, 少锡膏偏移, ...]
+        image_labels: image_labels.csv   # columns image,label  -- or `folder`: the image's parent
+                                         # folder name is its class (images/train/<class>/x.jpg)
+    Labels in the CSV may also be per split: image_labels: {train: a.csv, val: b.csv}.
+    """
+    __inject__ = ['transforms']
+    __share__ = ['num_classes', 'remap_mscoco_category']
+
+    def __init__(self, data_yaml, split='train', transforms=None, num_classes=None,
+                 remap_mscoco_category=False):
+        super().__init__(data_yaml, split=split, transforms=transforms, num_classes=num_classes,
+                         remap_mscoco_category=remap_mscoco_category)
+        metadata, _, root = read_yolo_metadata(data_yaml)
+        names = read_image_classes(metadata, data_yaml)
+        if names is None:
+            raise ValueError(f'{data_yaml}: YoloMultiTask needs image_names')
+        self.image_class_names = names
+        source = metadata.get('image_labels', 'folder')
+        if isinstance(source, dict):
+            source = source.get(split)
+            if source is None:
+                raise ValueError(f'{data_yaml}: image_labels has no {split!r} entry')
+        self.image_labels = {}
+        if source == 'folder':
+            for image_id, info in self.coco.imgs.items():
+                folder = Path(info['file_name']).parent.name
+                self.image_labels[image_id] = names.index(folder) if folder in names else -1
+        else:
+            table_path = Path(source).expanduser()
+            table_path = table_path if table_path.is_absolute() else root / table_path
+            table = read_image_label_table(table_path, names)
+            for image_id, info in self.coco.imgs.items():
+                path = Path(info['file_name'])
+                keys = [path.as_posix()]
+                try:
+                    keys.append(path.relative_to(root).as_posix())
+                except ValueError:
+                    pass
+                keys += [path.name, path.stem]
+                self.image_labels[image_id] = next((table[key] for key in keys if key in table), -1)
+        missing = sum(label < 0 for label in self.image_labels.values())
+        if missing == len(self.image_labels):
+            raise ValueError(f'YOLO {split}: no image has a classification label; check image_labels in {data_yaml}')
+        if missing:
+            warnings.warn(f'YOLO {split}: {missing}/{len(self.image_labels)} images have no classification '
+                          f'label; they are used for detection only', stacklevel=2)
+
+    def load_item(self, idx):
+        import torch
+        image, target = super().load_item(idx)
+        target['image_label'] = torch.tensor([self.image_labels[self.ids[idx]]], dtype=torch.long)
+        return image, target
+
+    def __getitem__(self, idx):
+        import torch
+        image, target = self.load_item(idx)
+        had_boxes = len(target.get('boxes', ())) > 0
+        if self._transforms is not None:
+            image, target, _ = self._transforms(image, target, self)
+        # RandomIoUCrop can cut away every annotated object; the image class (e.g. a defect)
+        # may then no longer be visible, so don't train the classifier on that crop.
+        if had_boxes and len(target.get('boxes', ())) == 0 and 'image_label' in target:
+            target['image_label'] = torch.full_like(target['image_label'], -1)
+        return image, target

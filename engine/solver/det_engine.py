@@ -137,11 +137,19 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
     # coco_evaluator = CocoEvaluator(base_ds, iou_types)
     # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
 
+    image_meter = None  # multi-task models also classify the whole image
+
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
         outputs = model(samples)
+
+        if 'image_logits' in outputs:
+            if image_meter is None:
+                from ..deim.multitask import ImageClassificationMeter
+                image_meter = ImageClassificationMeter(outputs['image_logits'].shape[-1])
+            image_meter.update(outputs['image_logits'], targets)
 
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
         # PostProcessor scales normalized predictions to the model input canvas.
@@ -181,5 +189,14 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
             stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
         if 'segm' in iou_types:
             stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
+
+    if image_meter is not None:
+        image_meter.synchronize()
+        summary = image_meter.summary()
+        print(f"Image classification: accuracy {summary['accuracy']:.4f}  macro-F1 {summary['macro_f1']:.4f}  "
+              f"({summary['images']} labelled images)")
+        print(f"  per-class recall: {[round(v, 4) for v in summary['per_class_recall']]}")
+        # Not a 'coco_eval_*' key: the solver keeps choosing the best checkpoint by detection mAP.
+        stats['image_cls'] = summary
 
     return stats, coco_evaluator

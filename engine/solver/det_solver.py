@@ -59,6 +59,7 @@ class DetSolver(BaseSolver):
                 self.evaluator,
                 self.device
             )
+            test_stats.pop('image_cls', None)
             for k in test_stats:
                 best_stat['epoch'] = self.last_epoch
                 best_stat[k] = test_stats[k][0]
@@ -123,6 +124,12 @@ class DetSolver(BaseSolver):
                 self.device
             )
 
+            # Image classification (multi-task models): logged, not used to pick the best checkpoint.
+            image_cls = test_stats.pop('image_cls', None)
+            if image_cls is not None and self.writer and dist_utils.is_main_process():
+                self.writer.add_scalar('Test/image_cls_accuracy', image_cls['accuracy'], epoch)
+                self.writer.add_scalar('Test/image_cls_macro_f1', image_cls['macro_f1'], epoch)
+
             for k in test_stats:
                 if self.writer and dist_utils.is_main_process():
                     for i, v in enumerate(test_stats[k]):
@@ -166,6 +173,7 @@ class DetSolver(BaseSolver):
             log_stats = {
                 **{f'train_{k}': v for k, v in train_stats.items()},
                 **{f'test_{k}': v for k, v in test_stats.items()},
+                **({'test_image_cls': image_cls} if image_cls is not None else {}),
                 'epoch': epoch,
                 'n_parameters': n_parameters
             }

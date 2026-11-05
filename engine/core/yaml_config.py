@@ -23,15 +23,23 @@ class YAMLConfig(BaseConfig):
         cfg = merge_dict(cfg, kwargs)
 
         if cfg.get('yolo_data'):
-            from ..data.dataset.yolo_dataset import read_yolo_metadata
-            _, names, _ = read_yolo_metadata(cfg['yolo_data'])
+            from ..data.dataset.yolo_dataset import read_image_classes, read_yolo_metadata
+            metadata, names, _ = read_yolo_metadata(cfg['yolo_data'])
             cfg['num_classes'] = len(names)
             cfg['remap_mscoco_category'] = False
+            # Multi-task configs set `yolo_dataset: YoloMultiTask`; the image class count comes from
+            # data.yaml's image_names so model, loss and data always agree.
+            dataset_type = cfg.get('yolo_dataset', 'YoloDetection')
+            if dataset_type == 'YoloMultiTask':
+                image_names = read_image_classes(metadata, cfg['yolo_data'])
+                if image_names is None:
+                    raise ValueError(f"{cfg['yolo_data']}: multi-task training needs image_names in data.yaml")
+                cfg['num_image_classes'] = len(image_names)
             for split in ('train', 'val'):
                 dataset = cfg[f'{split}_dataloader']['dataset']
                 for key in ('img_folder', 'ann_file', 'return_masks'):
                     dataset.pop(key, None)
-                dataset.update(type='YoloDetection', data_yaml=cfg['yolo_data'], split=split)
+                dataset.update(type=dataset_type, data_yaml=cfg['yolo_data'], split=split)
 
         self.yaml_cfg = copy.deepcopy(cfg)
 

@@ -67,6 +67,9 @@ def export(args):
         _, data_names, _ = read_yolo_metadata(args.data)
         names = resolve_names(data_names, names)
     options = export_options(names=names) if names is not None else export_options(data=args.data)
+    if state.get('num_image_classes'):
+        # Multi-task checkpoint: size the image-classification head like the trained one.
+        options['num_image_classes'] = int(state['num_image_classes'])
     cfg = YAMLConfig(str(Path(args.config).resolve()), **options)
     if names is None and cfg.yaml_cfg.get('yolo_data'):
         from engine.data.dataset.yolo_dataset import read_yolo_metadata

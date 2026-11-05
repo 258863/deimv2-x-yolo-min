@@ -5,7 +5,7 @@ Copyright(c) 2023 lyuwenyu. All Rights Reserved.
 
 # from ._dataset import DetDataset
 from .coco_dataset import CocoDetection
-from .yolo_dataset import YoloDetection
+from .yolo_dataset import YoloDetection, YoloMultiTask
 from .coco_dataset import (
     mscoco_category2name,
     mscoco_category2label,

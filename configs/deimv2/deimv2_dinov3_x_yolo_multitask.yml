@@ -1,0 +1,35 @@
+__include__: ['deimv2_dinov3_x_yolo.yml']
+
+# Detection + image classification with ONE shared backbone (DINOv3STAs, 640x640).
+#
+#   image -> DINOv3STAs -> 3 feature maps -+-> HybridEncoder -> DEIMTransformer -> boxes
+#                                          +-> mean pool + LayerNorm + Linear     -> image class
+#
+# Everything detection-related is inherited unchanged from deimv2_dinov3_x_yolo.yml, so
+# `-t model.pth` (COCO) loads the whole detector and only `image_head.*` starts from scratch.
+#
+# data.yaml needs two extra keys (see README_MULTITASK_ZH.md):
+#   image_names: [OK, 少锡膏偏移, 立碑浮高侧立, 缺件, 翻帖]
+#   image_labels: image_labels.csv     # columns image,label  -- or `folder` (class = parent folder)
+
+output_dir: ./outputs/deimv2_dinov3_x_yolo_multitask
+
+yolo_dataset: YoloMultiTask          # adds target['image_label'] to every sample
+
+model: DEIMMultiTask
+criterion: MultiTaskCriterion
+
+DEIMMultiTask:
+  backbone: DINOv3STAs
+  encoder: HybridEncoder
+  decoder: DEIMTransformer
+  cls_in_channels: [256, 256, 256]   # = DINOv3STAs.hidden_dim for each of the 3 levels
+  cls_hidden_dim: 0                  # 0: LayerNorm + Linear (same as classification/model.py)
+  cls_dropout: 0.2
+  cls_source: backbone               # backbone | encoder (pool the FPN outputs instead)
+
+MultiTaskCriterion:
+  det_criterion: DEIMCriterion       # the unchanged detection loss (section inherited from base)
+  image_cls_weight: 1.0              # total = detection losses + weight * cross-entropy
+  label_smoothing: 0.05              # same as the rcclz classification runs
+  class_weights: ~                   # e.g. [1.0, 2.0, 2.0, 2.0, 2.0] for rare defect classes
