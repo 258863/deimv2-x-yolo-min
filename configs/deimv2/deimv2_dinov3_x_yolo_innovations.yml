@@ -17,10 +17,10 @@ output_dir: ./outputs/deimv2_dinov3_x_yolo_innovations
 #   applied to the c3 feature before it's fused with the semantic branch, using the raw
 #   spatial (CNN) feature as the direction source.
 #
-# This exact combination has only been validated on the classification task so far --
-# it has not been trained/evaluated for detection. Shapes are compatible (both modules
-# are channel-preserving residual adapters, zero-initialized so they start near-identity),
-# but treat accuracy/speed here as unverified until you've run it.
+# This combination has been trained for detection and exported with the deployment
+# workflow; see tools/deployment/README.md for DEG export compatibility and measured
+# precision differences. Both modules preserve channels and start near identity.
+# Accuracy, speed, and target-GPU compatibility still require validation per model.
 DINOv3STAs:
   sta_variant: s1_ca
   sta_bottleneck_dim: 64

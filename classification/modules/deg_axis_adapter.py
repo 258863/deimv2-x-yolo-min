@@ -23,8 +23,15 @@ def cell_histogram(theta: torch.Tensor, nbins: int = 36, cell_size: int = 8) -> 
         ).reshape(batch, grid_h, grid_w, cell_size * cell_size)
 
     weights = arrange_cells(valid)
-    counts = torch.zeros(batch, grid_h, grid_w, nbins, device=theta.device, dtype=torch.float32)
-    counts.scatter_add_(-1, arrange_cells(indices), weights)
+    if torch.onnx.is_in_onnx_export():
+        # TRT 10.13 needs an unavailable ScatterReduction plugin for scatter_add.
+        # Count each bin explicitly during export, keeping padded pixels masked out.
+        bins = torch.arange(nbins, device=theta.device).reshape(1, 1, 1, 1, nbins)
+        matches = arrange_cells(indices).unsqueeze(-1) == bins
+        counts = (matches.to(weights.dtype) * weights.unsqueeze(-1)).sum(dim=-2)
+    else:
+        counts = torch.zeros(batch, grid_h, grid_w, nbins, device=theta.device, dtype=torch.float32)
+        counts.scatter_add_(-1, arrange_cells(indices), weights)
     hist = counts / weights.sum(-1, keepdim=True).clamp_min(1)
     centers = (torch.arange(nbins, device=theta.device).float() + 0.5) * (torch.pi / nbins)
     return (hist * centers).permute(0, 3, 1, 2).contiguous()

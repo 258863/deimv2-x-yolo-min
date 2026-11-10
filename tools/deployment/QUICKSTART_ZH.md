@@ -47,6 +47,16 @@ python tools/deployment/deploy.py export --config configs/deimv2/deimv2_dinov3_x
 
 仅兼容旧模型时：如果旧 checkpoint 没有 `names`，可补填 `--names` 或 `--data`，两者互斥；都不填则沿用配置中的有效 `yolo_data`。旧 ONNX 没有名称时，构建阶段需补填 `--names`。
 
+### 创新版模型
+
+如果训练使用了`deimv2_dinov3_x_yolo_innovations.yml`（S1-CA＋语义空间交互＋DEG），导出时使用同一配置：
+
+```powershell
+python tools/deployment/deploy.py export --config configs/deimv2/deimv2_dinov3_x_yolo_innovations.yml --checkpoint D:/run/best.pth --device cuda:0 --output artifacts/model_raw.onnx
+```
+
+普通模型继续使用上面的普通配置。创新版在ONNX导出时自动将DEG方向直方图的`scatter_add`改为等价的分箱比较与求和，避免缺失`ScatterReduction`插件；训练和PyTorch推理路径保持不变，不需要重训。之后`patch`和`build --precision fp16mix`的命令与普通版相同，仍须验证精度。兼容改写和48图实测差异见[完整说明](README.md#双创新模块模型导出)。
+
 ### 训练时保存类别信息
 
 YOLO 数据集的 `data.yaml` 中设置 `names`。训练会按类别编号顺序读取名称，并在所有通过 solver 保存的 checkpoint 中记录：

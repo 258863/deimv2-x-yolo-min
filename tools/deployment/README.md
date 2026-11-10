@@ -2,7 +2,7 @@
 
 快速上手：[转换与推理简明流程](QUICKSTART_ZH.md)。包含转换命令、精度设置、验证步骤及 EXE 交付要求。
 
-这是已验证实验方法的可移植工具版：FP16混合精度（敏感层FP32），以及严格FP32对照；不是INT8量化，不需要校准集。默认仅支持X模型、batch=1、640×640、8个注意力头、每头32通道、三尺度6400/1600/400位置。创新模块配置未验证。
+这是已验证实验方法的可移植工具版：FP16混合精度（敏感层FP32），以及严格FP32对照；不是INT8量化，不需要校准集。默认仅支持X模型、batch=1、640×640、8个注意力头、每头32通道、三尺度6400/1600/400位置。普通配置与现有双创新模块配置的转换方法见下文；不同模型仍需逐次验证。
 
 ## 环境
 
@@ -62,6 +62,36 @@ python tools/deployment/verify_engine.py --onnx artifacts/model_fixed.onnx --eng
 使用相同输入、ORT CPU参考、TRT同步执行。按sigmoid后query/class展平top300，记录conf≥0.5类别集合、top10分数差、纯前向耗时。query排序可能不同，因此不把原始张量逐元素差直接当作模型错误。此检查没有GT，不计算召回、框定位质量或端到端FPS。差异如实记录，不自动声称验收通过或修改model.json状态。
 
 还需用冻结的人工标签数据集按既定业务口径计算逐类召回、检查框位置和误检，并测完整流水线时延。空预测不等于正常；与FP32类别集合一致不意味着所有框和分数完全一致。框还原需按实际round后的宽高缩放率去除居中padding。
+
+## 双创新模块模型导出
+
+训练启用了S1-CA、语义—空间交互和DEG时，必须使用与训练结构一致的配置导出。两套模型共用同一个部署CLI，区别是`--config`，不能只改类别名称来适配结构：
+
+```powershell
+python tools/deployment/deploy.py export --config configs/deimv2/deimv2_dinov3_x_yolo_innovations.yml --checkpoint D:/run/best.pth --device cuda:0 --output artifacts/model_raw.onnx
+```
+
+之后照常运行上述`patch`、`build --precision fp16mix`和验收步骤。原配置`deimv2_dinov3_x_yolo.yml`仍用于普通模型，无需增加导出开关。
+
+DEG的局部方向直方图在普通PyTorch训练/推理时继续使用`scatter_add_`。ONNX导出时自动替换为逐bin相等比较、有效像素mask及求和，避免TensorRT 10.13解析累加型Scatter时依赖缺失的`ScatterReduction`插件。36个方向区间、8×8单元、补边排除、归一化和后续方向编码均保留；不删除创新模块、不改权重、不需要重训。这项替换与注意力特征布局`patch`解决的是不同问题。
+
+可运行定向测试：
+
+```powershell
+python -m unittest discover -s tests -p test_deg_export.py -v
+```
+
+测试覆盖含补边/方向边界的直方图逐值等价，以及opset17导出、图中无Scatter节点、ONNX Runtime输出一致。显式比较可能增加中间张量和计算，不能据此承诺加速。测试仅覆盖固定尺寸，不承诺动态输入支持。
+
+一次RTX3090 Ti / TensorRT10.13.3.9实测，双类创新模型在同一48图验证集、batch1 FP32参考下：
+
+| 指标 | PyTorch FP32 | TRT FP16mix |
+|---|---:|---:|
+| AP50 | 99.652% | 100.000% |
+| AP50–95 | 76.335% | 76.522% |
+| 极性弧AP50–95 | 68.905% | 68.593% |
+
+conf≥0.5时1张图框数不同（顶部2框→1框），匹配预测框最小IoU为0.9914。该PyTorch参考关闭TF32，与训练时batch8验证分数略有不同；不能混为同一协议或声称无损。两版输出格式仍为`pred_logits`、`pred_boxes`，可使用相同DEIM推理后处理；未默认加入NMS或每类仅取最高分。小验证集不是独立生产验收，每次转换和换机都需要重新比较。
 
 ## 实验依据（2026-10-29）
 
